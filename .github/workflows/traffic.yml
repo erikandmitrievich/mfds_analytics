@@ -1,0 +1,28 @@
+name: Track university Repo Traffic
+on:
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  traffic:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Repository Traffic
+        uses: sangonzal/repository-traffic-action@v.0.1.6
+        with:
+          repository: obluda2173/university
+        env:
+          TRAFFIC_ACTION_TOKEN: ${{ secrets.TRAFFIC_TOKEN }}
+
+      - name: Commit changes
+        uses: stefanzweifel/git-auto-commit-action@v4
+        with:
+          commit_message: "Update traffic data"
+          file_pattern: traffic/*
