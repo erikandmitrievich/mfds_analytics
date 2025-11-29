@@ -2,6 +2,7 @@ import os
 import requests
 import pandas as pd
 from datetime import datetime
+import sys
 
 def run_traffic_job():
     # 1. Configuration
@@ -10,7 +11,7 @@ def run_traffic_job():
         TOKEN = os.environ['TRAFFIC_TOKEN']
     except KeyError as e:
         print(f"Error: Missing environment variable {e}")
-        exit(1)
+        sys.exit(1)
 
     HEADERS = {
         "Authorization": f"Bearer {TOKEN}",
@@ -39,31 +40,38 @@ def run_traffic_job():
     new_df['timestamp'] = pd.to_datetime(new_df['timestamp'])
 
     file_path = "traffic/views.csv"
+
     if os.path.exists(file_path):
-        try:
-            old_df = pd.read_csv(file_path)
-            # Compatibility fix for old data formats
-            if 'date' in old_df.columns:
-                old_df = old_df.rename(columns={'date': 'timestamp'})
+        print(f"Found existing {file_path}, merging...")
+        # SAFETY CHANGE: We do NOT use a broad try/except block here.
+        # If this fails, we want the script to CRASH, not overwrite your data.
+        old_df = pd.read_csv(file_path)
 
-            old_df['timestamp'] = pd.to_datetime(old_df['timestamp'])
+        # Compatibility fix for old data formats (if you used the old action)
+        if 'date' in old_df.columns:
+            old_df = old_df.rename(columns={'date': 'timestamp'})
 
-            # Merge and Deduplicate
-            combined = pd.concat([old_df, new_df])
-            combined = combined.drop_duplicates(subset=['timestamp'], keep='last')
-            combined = combined.sort_values(by='timestamp')
-        except Exception as e:
-            print(f"Error reading existing file: {e}. Starting fresh.")
-            combined = new_df
+        old_df['timestamp'] = pd.to_datetime(old_df['timestamp'])
+
+        # 1. Combine Old and New
+        combined = pd.concat([old_df, new_df])
+
+        # 2. Deduplicate: If today's date exists in both, keep the 'new' one (most up to date count)
+        combined = combined.drop_duplicates(subset=['timestamp'], keep='last')
+
+        # 3. Sort chronologically
+        combined = combined.sort_values(by='timestamp')
     else:
+        print("No existing file found. Creating new one.")
         combined = new_df
 
     combined.to_csv(file_path, index=False)
-    print("Successfully updated daily views.csv")
+    print(f"Successfully updated daily views.csv. Total records: {len(combined)}")
 
     # --- PART B: LOG HOURLY SNAPSHOT (hourly_raw.csv) ---
-    # Get the count for 'Today' right now
-    todays_data = data[-1]
+    # This part appends new rows without reading the whole file, which is safer for high-frequency logs.
+
+    todays_data = data[-1] # The last entry is "Today"
 
     snapshot = {
         'execution_time': datetime.now().isoformat(),
@@ -75,7 +83,7 @@ def run_traffic_job():
     hourly_file = "traffic/hourly_raw.csv"
     hourly_df = pd.DataFrame([snapshot])
 
-    # Append to the file (don't overwrite)
+    # Append mode 'a' adds to the bottom without overwriting
     if os.path.exists(hourly_file):
         hourly_df.to_csv(hourly_file, mode='a', header=False, index=False)
     else:
