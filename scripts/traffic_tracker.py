@@ -2,6 +2,7 @@ import os
 import requests
 import pandas as pd
 import sys
+from datetime import datetime
 
 def update_traffic_data(metric_type, filename):
     print(f"--- Processing {metric_type} ---")
@@ -36,46 +37,66 @@ def update_traffic_data(metric_type, filename):
         print(f"No {metric_type} data returned from GitHub.")
         return
 
-    # 3. Process New Data
-    new_df = pd.DataFrame(data)
-    new_df['timestamp'] = pd.to_datetime(new_df['timestamp'])
+    # 3. Prepare the New Record (The "Hourly" Snapshot)
+    # We only care about the latest data point (Today's current status)
+    # The API returns a list; the last one is the most current day.
+    latest_record = data[-1]
 
-    # 4. Load & Merge with Existing History
+    new_df = pd.DataFrame([latest_record])
+
+    # RENAME GitHub's timestamp to 'github_timestamp' to avoid confusion
+    new_df = new_df.rename(columns={'timestamp': 'github_timestamp'})
+    new_df['github_timestamp'] = pd.to_datetime(new_df['github_timestamp'])
+
+    # ADD 'recorded_at': This captures the actual Hour/Minute the script ran
+    new_df['recorded_at'] = datetime.now()
+
+    # Reorder columns for readability
+    cols = ['recorded_at', 'github_timestamp', 'count', 'uniques']
+    new_df = new_df[cols]
+
+    # 4. File Handling
     file_path = f"traffic/{filename}"
 
     if os.path.exists(file_path):
-        print(f"Found existing {filename}, merging...")
+        # --- ONE-TIME MIGRATION CHECK ---
+        # We need to peek at the file to see if it supports the new format
         try:
-            old_df = pd.read_csv(file_path)
+            # Read just the header
+            existing_header = pd.read_csv(file_path, nrows=0).columns.tolist()
 
-            # Fix column name compatibility (if moving from old action)
-            if 'date' in old_df.columns:
-                old_df = old_df.rename(columns={'date': 'timestamp'})
+            if 'recorded_at' not in existing_header:
+                print(f"Old CSV format detected in {filename}. Migrating database once...")
+                # Read full file
+                old_df = pd.read_csv(file_path)
 
-            old_df['timestamp'] = pd.to_datetime(old_df['timestamp'])
+                # Rename old 'timestamp' or 'date' to 'github_timestamp'
+                if 'date' in old_df.columns:
+                    old_df.rename(columns={'date': 'github_timestamp'}, inplace=True)
+                elif 'timestamp' in old_df.columns:
+                    old_df.rename(columns={'timestamp': 'github_timestamp'}, inplace=True)
 
-            # MERGE LOGIC:
-            # 1. Stack old and new data
-            combined = pd.concat([old_df, new_df])
-            # 2. If 'Today' exists in both, keep the 'new' one (latest count)
-            combined = combined.drop_duplicates(subset=['timestamp'], keep='last')
-            # 3. Sort chronologically
-            combined = combined.sort_values(by='timestamp')
+                # Backfill 'recorded_at' with the github timestamp (best guess for old data)
+                old_df['recorded_at'] = pd.to_datetime(old_df['github_timestamp'])
+
+                # Save the converted file (Rewriting ONLY happened here for migration)
+                old_df.to_csv(file_path, index=False)
+                print("Migration complete.")
+
+            # --- APPEND NEW DATA ---
+            # mode='a' adds to the end. header=False prevents writing column names again.
+            new_df.to_csv(file_path, mode='a', header=False, index=False)
+            print(f"Appended hourly update to {filename}.")
 
         except Exception as e:
-            print(f"CRITICAL ERROR reading {filename}: {e}")
-            print("Stopping to prevent data loss.")
-            sys.exit(1)
+            print(f"Error updating {filename}: {e}")
     else:
-        print(f"No existing {filename} found. Creating new one.")
-        combined = new_df
-
-    # 5. Save safely
-    combined.to_csv(file_path, index=False)
-    print(f"Successfully updated {filename}. Total records: {len(combined)}")
+        # File doesn't exist, create new file with headers
+        print(f"Creating new file: {filename}")
+        new_df.to_csv(file_path, index=False)
 
 if __name__ == "__main__":
     # Update Views
     update_traffic_data('views', 'views.csv')
-    # Update Clones (Optional, but good to have)
+    # Update Clones
     update_traffic_data('clones', 'clones.csv')
