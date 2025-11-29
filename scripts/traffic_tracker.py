@@ -46,19 +46,30 @@ def update_traffic_data(metric_type, filename):
     new_df['github_timestamp'] = pd.to_datetime(new_df['github_timestamp'])
     new_df['recorded_at'] = datetime.now()
 
-    # Define the strict column order
-    cols = ['recorded_at', 'github_timestamp', 'count', 'uniques']
-    new_df = new_df[cols]
-
     # 4. File Handling
     file_path = f"traffic/{filename}"
 
+    # Default preferred order (Used only for NEW files or during Migration)
+    default_cols = ['recorded_at', 'github_timestamp', 'count', 'uniques']
+
     if os.path.exists(file_path):
         try:
-            # Check header to see if migration is needed
+            # CRITICAL FIX: Read the ACTUAL header from the file
             existing_header = pd.read_csv(file_path, nrows=0).columns.tolist()
 
-            if 'recorded_at' not in existing_header:
+            if 'recorded_at' in existing_header:
+                # Case A: File is already migrated/correct.
+                # WE MUST USE THE FILE'S COLUMN ORDER, NOT OUR OWN.
+                cols = existing_header
+
+                # Reorder new data to match existing file structure exactly
+                new_df = new_df[cols]
+
+                new_df.to_csv(file_path, mode='a', header=False, index=False)
+                print(f"Appended hourly update to {filename} (Matched existing column order).")
+
+            else:
+                # Case B: Old Legacy File (Missing 'recorded_at'). Migration needed.
                 print(f"Old CSV format detected in {filename}. Migrating database...")
                 old_df = pd.read_csv(file_path)
 
@@ -68,25 +79,28 @@ def update_traffic_data(metric_type, filename):
                 elif 'timestamp' in old_df.columns:
                     old_df.rename(columns={'timestamp': 'github_timestamp'}, inplace=True)
 
-                # Create missing 'recorded_at' column
+                # Create missing 'recorded_at' column (Backfill)
                 old_df['recorded_at'] = pd.to_datetime(old_df['github_timestamp'])
 
-                # CRITICAL FIX: Reorder columns to match 'cols' BEFORE saving
-                old_df = old_df[cols]
+                # Apply the NEW default order
+                old_df = old_df[default_cols]
 
                 # Overwrite file with corrected structure
                 old_df.to_csv(file_path, index=False)
                 print("Migration complete. Columns reordered.")
 
-            # Append new data
-            new_df.to_csv(file_path, mode='a', header=False, index=False)
-            print(f"Appended hourly update to {filename}.")
+                # Append the new data using the default order
+                new_df = new_df[default_cols]
+                new_df.to_csv(file_path, mode='a', header=False, index=False)
+                print(f"Appended current update to {filename}.")
 
         except Exception as e:
             print(f"Error updating {filename}: {e}")
             sys.exit(1)
     else:
+        # Case C: New File. Create with default order.
         print(f"Creating new file: {filename}")
+        new_df = new_df[default_cols]
         new_df.to_csv(file_path, index=False)
 
 if __name__ == "__main__":
