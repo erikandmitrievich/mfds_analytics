@@ -1,7 +1,7 @@
-name: Track University Traffic
+name: Track University Traffic Hourly
 on:
   schedule:
-    - cron: "0 0 * * *"
+    - cron: "0 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -22,88 +22,14 @@ jobs:
       - name: Install Dependencies
         run: pip install requests pandas
 
-      - name: Fetch and Merge Traffic Data
+      - name: Run Traffic Script
         env:
           TRAFFIC_TOKEN: ${{ secrets.TRAFFIC_TOKEN }}
           TARGET_REPO: "obluda2173/university"
-        run: |
-          import os
-          import requests
-          import pandas as pd
-
-          # 1. Setup
-          REPO = os.environ['TARGET_REPO']
-          TOKEN = os.environ['TRAFFIC_TOKEN']
-          HEADERS = {
-              "Authorization": f"Bearer {TOKEN}",
-              "Accept": "application/vnd.github.v3+json"
-          }
-
-          if not os.path.exists('traffic'):
-              os.makedirs('traffic')
-
-          def update_csv(metric_type, filename):
-              print(f"--- Processing {metric_type} ---")
-
-              # 2. Fetch Data
-              url = f"https://api.github.com/repos/{REPO}/traffic/{metric_type}"
-              response = requests.get(url, headers=HEADERS)
-
-              if response.status_code != 200:
-                  print(f"Error fetching data: {response.text}")
-                  exit(1)
-
-              data = response.json().get(metric_type, [])
-              if not data:
-                  print("No data found, skipping.")
-                  return
-
-              # 3. Create New DataFrame
-              new_df = pd.DataFrame(data)
-              if 'timestamp' not in new_df.columns:
-                  print("API returned unexpected format.")
-                  return
-              new_df['timestamp'] = pd.to_datetime(new_df['timestamp'])
-
-              # 4. Load & Fix Existing CSV
-              file_path = f"traffic/{filename}"
-              combined = new_df # Default to new data only
-
-              if os.path.exists(file_path):
-                  try:
-                      old_df = pd.read_csv(file_path)
-
-                      # --- FIX: Compatibility Check ---
-                      # The old action used 'date', we use 'timestamp'. Fix it if needed.
-                      if 'timestamp' not in old_df.columns and 'date' in old_df.columns:
-                          print("Migrating old file format...")
-                          old_df = old_df.rename(columns={'date': 'timestamp'})
-
-                      if 'timestamp' in old_df.columns:
-                          old_df['timestamp'] = pd.to_datetime(old_df['timestamp'])
-
-                          # Merge
-                          combined = pd.concat([old_df, new_df])
-                          combined = combined.drop_duplicates(subset=['timestamp'], keep='last')
-                          combined = combined.sort_values(by='timestamp')
-                          print(f"Merged with {len(old_df)} existing records.")
-                      else:
-                          print("Old file had invalid columns. Overwriting with new data.")
-                  except Exception as e:
-                      print(f"Error reading old file ({e}). Overwriting with new data.")
-
-              # 5. Save
-              combined.to_csv(file_path, index=False)
-              print(f"Saved {len(combined)} records to {filename}")
-
-          # Run
-          update_csv('views', 'views.csv')
-          update_csv('clones', 'clones.csv')
-
-        shell: python
+        run: python traffic_tracker.py
 
       - name: Commit changes
         uses: stefanzweifel/git-auto-commit-action@v4
         with:
-          commit_message: "Update traffic data"
+          commit_message: "Update hourly traffic snapshot"
           file_pattern: traffic/*
