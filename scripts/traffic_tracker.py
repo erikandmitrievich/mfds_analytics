@@ -2,7 +2,7 @@ import os
 import requests
 import pandas as pd
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 
 def update_traffic_data(metric_type, filename):
     print(f"--- Processing {metric_type} ---")
@@ -37,71 +37,97 @@ def update_traffic_data(metric_type, filename):
         print(f"No {metric_type} data returned from GitHub.")
         return
 
-    # 3. Prepare the New Record
+    # 3. Process the Latest Record from API
+    # GitHub returns a list of days. We only care about the last one (Today/Latest).
     latest_record = data[-1]
-    new_df = pd.DataFrame([latest_record])
 
-    # Rename and format
-    new_df = new_df.rename(columns={'timestamp': 'github_timestamp'})
-    new_df['github_timestamp'] = pd.to_datetime(new_df['github_timestamp'])
-    new_df['recorded_at'] = datetime.now()
+    # FIX: Ensure we treat the GitHub timestamp as UTC explicitly
+    current_github_ts = pd.to_datetime(latest_record['timestamp']).tz_convert(None) # Remove tz info for safe comparison
 
-    # 4. File Handling
+    current_total_count = latest_record['count']
+    current_total_uniques = latest_record['uniques']
+
+    # 4. Prepare File Path and Defaults
     file_path = f"traffic/{filename}"
-
-    # Default preferred order (Used only for NEW files or during Migration)
     default_cols = ['recorded_at', 'github_timestamp', 'count', 'uniques']
 
+    # Variables to hold what we have already saved for this specific github_timestamp
+    accumulated_count = 0
+    accumulated_uniques = 0
+
+    # 5. Read Existing Data to Calculate Deltas
     if os.path.exists(file_path):
         try:
-            # CRITICAL FIX: Read the ACTUAL header from the file
-            existing_header = pd.read_csv(file_path, nrows=0).columns.tolist()
+            # Load existing data
+            df = pd.read_csv(file_path)
 
-            if 'recorded_at' in existing_header:
-                # Case A: File is already migrated/correct.
-                # WE MUST USE THE FILE'S COLUMN ORDER, NOT OUR OWN.
-                cols = existing_header
+            # --- MIGRATION BLOCK (Legacy handling) ---
+            migration_needed = False
+            if 'recorded_at' not in df.columns:
+                print(f"Migrating legacy format for {filename}...")
+                # Normalize column names
+                if 'date' in df.columns: df.rename(columns={'date': 'github_timestamp'}, inplace=True)
+                elif 'timestamp' in df.columns: df.rename(columns={'timestamp': 'github_timestamp'}, inplace=True)
+                # Backfill recorded_at
+                df['recorded_at'] = pd.to_datetime(df['github_timestamp'])
+                df = df[default_cols] # Reorder
+                migration_needed = True
 
-                # Reorder new data to match existing file structure exactly
-                new_df = new_df[cols]
+            # Ensure timestamps are datetime objects for comparison
+            df['github_timestamp'] = pd.to_datetime(df['github_timestamp']).dt.tz_localize(None)
 
-                new_df.to_csv(file_path, mode='a', header=False, index=False)
-                print(f"Appended hourly update to {filename} (Matched existing column order).")
+            # --- DELTA LOGIC START ---
+            # Filter rows that match the CURRENT GitHub Timestamp (same day)
+            # We need to know how many views we have ALREADY saved for this day
+            same_day_data = df[df['github_timestamp'] == current_github_ts]
 
-            else:
-                # Case B: Old Legacy File (Missing 'recorded_at'). Migration needed.
-                print(f"Old CSV format detected in {filename}. Migrating database...")
-                old_df = pd.read_csv(file_path)
+            if not same_day_data.empty:
+                accumulated_count = same_day_data['count'].sum()
+                accumulated_uniques = same_day_data['uniques'].sum()
 
-                # Normalize old column names
-                if 'date' in old_df.columns:
-                    old_df.rename(columns={'date': 'github_timestamp'}, inplace=True)
-                elif 'timestamp' in old_df.columns:
-                    old_df.rename(columns={'timestamp': 'github_timestamp'}, inplace=True)
-
-                # Create missing 'recorded_at' column (Backfill)
-                old_df['recorded_at'] = pd.to_datetime(old_df['github_timestamp'])
-
-                # Apply the NEW default order
-                old_df = old_df[default_cols]
-
-                # Overwrite file with corrected structure
-                old_df.to_csv(file_path, index=False)
-                print("Migration complete. Columns reordered.")
-
-                # Append the new data using the default order
-                new_df = new_df[default_cols]
-                new_df.to_csv(file_path, mode='a', header=False, index=False)
-                print(f"Appended current update to {filename}.")
+            # If we migrated, save the fixed file now
+            if migration_needed:
+                df.to_csv(file_path, index=False)
+                print("Migration complete.")
 
         except Exception as e:
-            print(f"Error updating {filename}: {e}")
-            sys.exit(1)
+            print(f"Error reading existing file for delta calculation: {e}")
+            # If read fails, we assume 0 accumulation to avoid crashing,
+            # though this might duplicate data in worst case.
+            pass
+
+    # 6. Calculate Hourly Delta
+    # (Current Total from API) - (Sum of all previous hours recorded today)
+    hourly_count = current_total_count - accumulated_count
+    hourly_uniques = current_total_uniques - accumulated_uniques
+
+    # Edge Case: If GitHub resets data or returns weird cache, don't save negative numbers
+    if hourly_count < 0: hourly_count = 0
+    if hourly_uniques < 0: hourly_uniques = 0
+
+    print(f"API Total: {current_total_count} | Already Saved: {accumulated_count} | New Hourly Entry: {hourly_count}")
+
+    # If there is no new activity, you might check here if you want to save a 0 row.
+    # Current logic: Saves 0 rows to show continuity.
+
+    # 7. Create the New Row
+    new_row = {
+        'recorded_at': datetime.now(timezone.utc), # Explicit UTC for recording time
+        'github_timestamp': current_github_ts,
+        'count': hourly_count,
+        'uniques': hourly_uniques
+    }
+
+    new_df = pd.DataFrame([new_row])
+    new_df = new_df[default_cols]
+
+    # 8. Append to File
+    if os.path.exists(file_path):
+        new_df.to_csv(file_path, mode='a', header=False, index=False)
     else:
-        # Case C: New File. Create with default order.
-        print(f"Creating new file: {filename}")
-        new_df = new_df[default_cols]
         new_df.to_csv(file_path, index=False)
+
+    print(f"Successfully saved update to {filename}")
 
 if __name__ == "__main__":
     update_traffic_data('views', 'views.csv')
