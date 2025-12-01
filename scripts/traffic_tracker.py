@@ -112,10 +112,10 @@ def update_traffic_data(metric_type, filename):
 
     # 7. Create the New Row
     new_row = {
-        'recorded_at': datetime.now(timezone.utc), # Explicit UTC for recording time
         'github_timestamp': current_github_ts,
         'count': hourly_count,
-        'uniques': hourly_uniques
+        'uniques': hourly_uniques,
+        'recorded_at': datetime.now(timezone.utc) # Explicit UTC for recording time
     }
 
     new_df = pd.DataFrame([new_row])
