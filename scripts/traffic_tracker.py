@@ -49,7 +49,7 @@ def update_traffic_data(metric_type, filename):
 
     # 4. Prepare File Path and Defaults
     file_path = f"traffic/{filename}"
-    default_cols = ['github_timestamp', 'count', 'uniques', 'recorded_at']
+    default_cols = ['recorded_at', 'count', 'uniques']
 
     # Variables to hold what we have already saved for this specific github_timestamp
     accumulated_count = 0
@@ -112,10 +112,9 @@ def update_traffic_data(metric_type, filename):
 
     # 7. Create the New Row
     new_row = {
-        'github_timestamp': current_github_ts,
+        'recorded_at': datetime.now(timezone.utc), # Explicit UTC for recording time
         'count': hourly_count,
-        'uniques': hourly_uniques,
-        'recorded_at': datetime.now(timezone.utc) # Explicit UTC for recording time
+        'uniques': hourly_uniques
     }
 
     new_df = pd.DataFrame([new_row])
