@@ -49,7 +49,7 @@ def update_traffic_data(metric_type, filename):
 
     # 4. Prepare File Path and Defaults
     file_path = f"traffic/{filename}"
-    default_cols = ['recorded_at', 'github_timestamp', 'count', 'uniques']
+    default_cols = ['github_timestamp', 'count', 'uniques', 'recorded_at']
 
     # Variables to hold what we have already saved for this specific github_timestamp
     accumulated_count = 0
