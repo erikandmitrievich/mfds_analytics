@@ -26,7 +26,7 @@ jobs:
         env:
           TRAFFIC_TOKEN: ${{ secrets.TRAFFIC_TOKEN }}
           TARGET_REPO: "obluda2173/university"
-        run: python scripts/traffic_tracker.py
+        run: python scripts/traffic_tracker_v02.py
 
       - name: Commit changes
         uses: stefanzweifel/git-auto-commit-action@v4
