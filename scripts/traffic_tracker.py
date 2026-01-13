@@ -25,6 +25,9 @@ def update_traffic_data(metric_type, filename):
         os.makedirs('traffic')
 
     # 2. Fetch Data from GitHub API
+    # Endpoints:
+    #   .../traffic/views -> returns { "views": [ {timestamp, count, uniques}, ... ] }
+    #   .../traffic/clones -> returns { "clones": [ {timestamp, count, uniques}, ... ] }
     url = f"https://api.github.com/repos/{REPO}/traffic/{metric_type}"
     response = requests.get(url, headers=HEADERS)
 
@@ -32,102 +35,81 @@ def update_traffic_data(metric_type, filename):
         print(f"Error fetching data: {response.text}")
         return
 
+    # Dynamic key access: 'views' or 'clones' matches metric_type
     data = response.json().get(metric_type, [])
+
     if not data:
         print(f"No {metric_type} data returned from GitHub.")
         return
 
-    # 3. Process the Latest Record from API
-    # GitHub returns a list of days. We only care about the last one (Today/Latest).
+    # 3. Get Current API State (The Cumulative Total for Today)
     latest_record = data[-1]
 
-    # FIX: Ensure we treat the GitHub timestamp as UTC explicitly
-    current_github_ts = pd.to_datetime(latest_record['timestamp']).tz_convert(None) # Remove tz info for safe comparison
+    # Normalize timestamp to string for consistent CSV comparison
+    current_target_date = pd.to_datetime(latest_record['timestamp']).strftime('%Y-%m-%d %H:%M:%S+00:00')
+    current_count = latest_record['count']
+    current_uniques = latest_record['uniques']
 
-    current_total_count = latest_record['count']
-    current_total_uniques = latest_record['uniques']
+    # 4. Read Previous State from File to Calculate Deltas
+    previous_count = 0
+    previous_uniques = 0
 
-    # 4. Prepare File Path and Defaults
     file_path = f"traffic/{filename}"
-    default_cols = ['recorded_at', 'count', 'uniques']
 
-    # Variables to hold what we have already saved for this specific github_timestamp
-    accumulated_count = 0
-    accumulated_uniques = 0
-
-    # 5. Read Existing Data to Calculate Deltas
     if os.path.exists(file_path):
         try:
-            # Load existing data
-            df = pd.read_csv(file_path)
+            df_existing = pd.read_csv(file_path)
+            if not df_existing.empty:
+                # Filter rows that belong to the SAME target date (Today)
+                # Since we are storing deltas, we must SUM all previous entries for today
+                # to know how much traffic we have already accounted for.
+                today_rows = df_existing[df_existing['target_date'] == current_target_date]
 
-            # --- MIGRATION BLOCK (Legacy handling) ---
-            migration_needed = False
-            if 'recorded_at' not in df.columns:
-                print(f"Migrating legacy format for {filename}...")
-                # Normalize column names
-                if 'date' in df.columns: df.rename(columns={'date': 'github_timestamp'}, inplace=True)
-                elif 'timestamp' in df.columns: df.rename(columns={'timestamp': 'github_timestamp'}, inplace=True)
-                # Backfill recorded_at
-                df['recorded_at'] = pd.to_datetime(df['github_timestamp'])
-                df = df[default_cols] # Reorder
-                migration_needed = True
-
-            # Ensure timestamps are datetime objects for comparison
-            df['github_timestamp'] = pd.to_datetime(df['github_timestamp']).dt.tz_localize(None)
-
-            # --- DELTA LOGIC START ---
-            # Filter rows that match the CURRENT GitHub Timestamp (same day)
-            # We need to know how many views we have ALREADY saved for this day
-            same_day_data = df[df['github_timestamp'] == current_github_ts]
-
-            if not same_day_data.empty:
-                accumulated_count = same_day_data['count'].sum()
-                accumulated_uniques = same_day_data['uniques'].sum()
-
-            # If we migrated, save the fixed file now
-            if migration_needed:
-                df.to_csv(file_path, index=False)
-                print("Migration complete.")
+                if not today_rows.empty:
+                    previous_count = today_rows['count'].sum()
+                    previous_uniques = today_rows['uniques'].sum()
 
         except Exception as e:
-            print(f"Error reading existing file for delta calculation: {e}")
-            # If read fails, we assume 0 accumulation to avoid crashing,
-            # though this might duplicate data in worst case.
-            pass
+            print(f"Warning: Could not read existing file for delta calculation: {e}")
 
-    # 6. Calculate Hourly Delta
-    # (Current Total from API) - (Sum of all previous hours recorded today)
-    hourly_count = current_total_count - accumulated_count
-    hourly_uniques = current_total_uniques - accumulated_uniques
+    # 5. Calculate Deltas
+    # (Total from API) - (Sum of parts already saved) = New Traffic since last run
+    delta_count = current_count - previous_count
+    delta_uniques = current_uniques - previous_uniques
 
-    # Edge Case: If GitHub resets data or returns weird cache, don't save negative numbers
-    if hourly_count < 0: hourly_count = 0
-    if hourly_uniques < 0: hourly_uniques = 0
+    # Sanity check: prevent negative numbers if GitHub adjusts totals downwards (e.g. removing bots)
+    if delta_count < 0: delta_count = 0
+    if delta_uniques < 0: delta_uniques = 0
 
-    print(f"API Total: {current_total_count} | Already Saved: {accumulated_count} | New Hourly Entry: {hourly_count}")
+    print(f"[{metric_type}] API Total: {current_count} | Saved Today: {previous_count} | Delta: {delta_count}")
 
-    # If there is no new activity, you might check here if you want to save a 0 row.
-    # Current logic: Saves 0 rows to show continuity.
-
-    # 7. Create the New Row
+    # 6. Create Row
     new_row = {
-        'recorded_at': datetime.now(timezone.utc), # Explicit UTC for recording time
-        'count': hourly_count,
-        'uniques': hourly_uniques
+        'recorded_at': datetime.now(timezone.utc),
+        'target_date': current_target_date,
+        'count': delta_count,
+        'uniques': delta_uniques
     }
 
+    # Optional: Skip writing if there is 0 new activity to save disk space
+    if delta_count == 0 and delta_uniques == 0:
+        print(f"No new {metric_type} for {current_target_date}. Skipping write.")
+        return
+
+    # 7. Write to File
     new_df = pd.DataFrame([new_row])
-    new_df = new_df[default_cols]
+    new_df = new_df[['recorded_at', 'target_date', 'count', 'uniques']] # Ensure order
 
-    # 8. Append to File
-    if os.path.exists(file_path):
-        new_df.to_csv(file_path, mode='a', header=False, index=False)
-    else:
-        new_df.to_csv(file_path, index=False)
+    # Add header only if file didn't exist
+    header_needed = not os.path.exists(file_path)
 
-    print(f"Successfully saved update to {filename}")
+    try:
+        new_df.to_csv(file_path, mode='a', header=header_needed, index=False)
+        print(f"Successfully saved delta to {filename}")
+    except Exception as e:
+        print(f"Error writing to file: {e}")
 
 if __name__ == "__main__":
+    # Ensure env vars are set: TARGET_REPO and TRAFFIC_TOKEN
     update_traffic_data('views', 'views.csv')
     update_traffic_data('clones', 'clones.csv')
