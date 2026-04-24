@@ -25,7 +25,7 @@ jobs:
       - name: Run Traffic Script
         env:
           TRAFFIC_TOKEN: ${{ secrets.TRAFFIC_TOKEN }}
-          TARGET_REPO: "obluda2173/university"
+          TARGET_REPO: "obluda2173/mfds"
         run: python scripts/traffic_tracker.py
 
       - name: Commit changes
